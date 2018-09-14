@@ -17,7 +17,7 @@ http://www.decalage.info/python/oletools
 
 #=== LICENSE =================================================================
 
-# rtfobj is copyright (c) 2012-2017, Philippe Lagadec (http://www.decalage.info)
+# rtfobj is copyright (c) 2012-2018, Philippe Lagadec (http://www.decalage.info)
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification,
@@ -73,12 +73,21 @@ http://www.decalage.info/python/oletools
 # 2017-05-04       PL: - fixed issue #164 to handle linked OLE objects
 # 2017-06-08       PL: - fixed issue/PR #143: bin object with negative length
 # 2017-06-29       PL: - temporary fix for issue #178
-# 2017-07-14 v0.51.1 PL: - disabled logging of each control word (issue #184)
+# 2017-07-14 v0.52 PL: - disabled logging of each control word (issue #184)
 # 2017-07-24       PL: - fixed call to RtfParser._end_of_file (issue #185)
 #                      - ignore optional space after \bin (issue #185)
 # 2017-09-06       PL: - fixed issue #196: \pxe is not a destination
+# 2018-01-11       CH: - speedup RTF parsing (PR #244)
+# 2018-02-01      JRM: - fixed issue #251: \bin without argument
+# 2018-04-09       PL: - fixed issue #280: OLE Package were not detected on Python 3
+# 2018-03-24 v0.53 PL: - fixed issue #292: \margSz is a destination
+# 2018-04-27       PL: - extract and display the CLSID of OLE objects
+# 2018-04-30       PL: - handle "\'" obfuscation trick - issue #281
+# 2018-05-10       PL: - fixed issues #303 #307: several destination cwords were incorrect
+# 2018-05-17       PL: - fixed issue #273: bytes constants instead of str
+# 2018-05-31 v0.53.1 PP: - fixed issue #316: whitespace after \bin on Python 3
 
-__version__ = '0.51.1dev4'
+__version__ = '0.53.1'
 
 # ------------------------------------------------------------------------------
 # TODO:
@@ -94,6 +103,7 @@ __version__ = '0.51.1dev4'
 
 import re, os, sys, binascii, logging, optparse
 import os.path
+from time import time
 
 # IMPORTANT: it should be possible to run oletools directly as scripts
 # in any directory without installing them with pip or setup.py.
@@ -109,8 +119,9 @@ if not _parent_dir in sys.path:
 
 from oletools.thirdparty.xglob import xglob
 from oletools.thirdparty.tablestream import tablestream
-from oletools.oleobj import OleObject, OleNativeStream
 from oletools import oleobj
+from oletools.thirdparty.olefile import olefile
+from oletools.common import clsid
 
 # === LOGGING =================================================================
 
@@ -259,21 +270,21 @@ re_executable_extensions = re.compile(
 
 # Destination Control Words, according to MS RTF Specifications v1.9.1:
 DESTINATION_CONTROL_WORDS = frozenset((
-    b"aftncn", b"aftnsep", b"aftnsepc", b"annotation", b"atnauthor", b"atndate", b"atnicn", b"atnid", b"atnparent", b"atnref",
-    b"atntime", b"atrfend", b"atrfstart", b"author", b"background", b"bkmkend", b"bkmkstart", b"blipuid", b"buptim", b"category",
+    b"aftncn", b"aftnsep", b"aftnsepc", b"annotation", b"atnauthor", b"atndate", b"atnid", b"atnparent", b"atnref",
+    b"atrfend", b"atrfstart", b"author", b"background", b"bkmkend", b"bkmkstart", b"blipuid", b"buptim", b"category",
     b"colorschememapping", b"colortbl", b"comment", b"company", b"creatim", b"datafield", b"datastore", b"defchp", b"defpap",
     b"do", b"doccomm", b"docvar", b"dptxbxtext", b"ebcend", b"ebcstart", b"factoidname", b"falt", b"fchars", b"ffdeftext",
     b"ffentrymcr", b"ffexitmcr", b"ffformat", b"ffhelptext", b"ffl", b"ffname",b"ffstattext", b"field", b"file", b"filetbl",
-    b"fldinst", b"fldrslt", b"fldtype", b"fname", b"fontemb", b"fontfile", b"fonttbl", b"footer", b"footerf", b"footerl",
+    b"fldinst", b"fldrslt", b"fldtype", b"fontemb", b"fonttbl", b"footer", b"footerf", b"footerl",
     b"footerr", b"footnote", b"formfield", b"ftncn", b"ftnsep", b"ftnsepc", b"g", b"generator", b"gridtbl", b"header", b"headerf",
-    b"headerl", b"headerr", b"hl", b"hlfr", b"hlinkbase", b"hlloc", b"hlsrc", b"hsv", b"htmltag", b"info", b"keycode", b"keywords",
+    b"headerl", b"headerr", b"hl", b"hlfr", b"hlinkbase", b"hlloc", b"hlsrc", b"hsv", b"info", b"keywords",
     b"latentstyles", b"lchars", b"levelnumbers", b"leveltext", b"lfolevel", b"linkval", b"list", b"listlevel", b"listname",
     b"listoverride", b"listoverridetable", b"listpicture", b"liststylename", b"listtable", b"listtext", b"lsdlockedexcept",
-    b"macc", b"maccPr", b"mailmerge", b"maln",b"malnScr", b"manager", b"margPr", b"mbar", b"mbarPr", b"mbaseJc", b"mbegChr",
+    b"macc", b"maccPr", b"mailmerge", b"malnScr", b"manager", b"margPr", b"mbar", b"mbarPr", b"mbaseJc", b"mbegChr",
     b"mborderBox", b"mborderBoxPr", b"mbox", b"mboxPr", b"mchr", b"mcount", b"mctrlPr", b"md", b"mdeg", b"mdegHide", b"mden",
     b"mdiff", b"mdPr", b"me", b"mendChr", b"meqArr", b"meqArrPr", b"mf", b"mfName", b"mfPr", b"mfunc", b"mfuncPr",b"mgroupChr",
-    b"mgroupChrPr",b"mgrow", b"mhideBot", b"mhideLeft", b"mhideRight", b"mhideTop", b"mhtmltag", b"mlim", b"mlimloc", b"mlimlow",
-    b"mlimlowPr", b"mlimupp", b"mlimuppPr", b"mm", b"mmaddfieldname", b"mmath", b"mmathPict", b"mmathPr",b"mmaxdist", b"mmc",
+    b"mgroupChrPr",b"mgrow", b"mhideBot", b"mhideLeft", b"mhideRight", b"mhideTop", b"mlim", b"mlimLoc", b"mlimLow",
+    b"mlimLowPr", b"mlimUpp", b"mlimUppPr", b"mm", b"mmaddfieldname", b"mmathPict", b"mmaxDist", b"mmc",
     b"mmcJc", b"mmconnectstr", b"mmconnectstrdata", b"mmcPr", b"mmcs", b"mmdatasource", b"mmheadersource", b"mmmailsubject",
     b"mmodso", b"mmodsofilter", b"mmodsofldmpdata", b"mmodsomappedname", b"mmodsoname", b"mmodsorecipdata", b"mmodsosort",
     b"mmodsosrc", b"mmodsotable", b"mmodsoudl", b"mmodsoudldata", b"mmodsouniquetag", b"mmPr", b"mmquery", b"mmr", b"mnary",
@@ -281,18 +292,25 @@ DESTINATION_CONTROL_WORDS = frozenset((
     b"mplcHide", b"mpos", b"mr", b"mrad", b"mradPr", b"mrPr", b"msepChr", b"mshow", b"mshp", b"msPre", b"msPrePr", b"msSub",
     b"msSubPr", b"msSubSup", b"msSubSupPr",  b"msSup", b"msSupPr", b"mstrikeBLTR", b"mstrikeH", b"mstrikeTLBR", b"mstrikeV",
     b"msub", b"msubHide", b"msup", b"msupHide", b"mtransp", b"mtype", b"mvertJc", b"mvfmf", b"mvfml", b"mvtof", b"mvtol",
-    b"mzeroAsc", b"mzeroDesc", b"mzeroWid", b"nesttableprops", b"nexctfile", b"nonesttables", b"objalias", b"objclass",
-    b"objdata", b"object", b"objname", b"objsect", b"objtime", b"oldcprops", b"oldpprops", b"oldsprops", b"oldtprops",
+    b"mzeroAsc", b"mzeroDesc", b"mzeroWid", b"nesttableprops", b"nonesttables", b"objalias", b"objclass",
+    b"objdata", b"object", b"objname", b"objsect", b"oldcprops", b"oldpprops", b"oldsprops", b"oldtprops",
     b"oleclsid", b"operator", b"panose", b"password", b"passwordhash", b"pgp", b"pgptbl", b"picprop", b"pict", b"pn", b"pnseclvl",
     b"pntext", b"pntxta", b"pntxtb", b"printim",
+    b"propname", b"protend", b"protstart", b"protusertbl",
+    b"result", b"revtbl", b"revtim", b"rtf", b"rxe", b"shp", b"shpgrp", b"shpinst", b"shppict", b"shprslt", b"shptxt",
+    b"sn", b"sp", b"staticval", b"stylesheet", b"subject", b"sv", b"svb", b"tc", b"template", b"themedata", b"title", b"txe", b"ud",
+    b"upr", b"userprops", b"wgrffmtfilter", b"windowcaption", b"writereservation", b"writereservhash", b"xe", b"xform",
+    b"xmlattrname", b"xmlattrvalue", b"xmlclose", b"xmlname", b"xmlnstbl", b"xmlopen",
+    # added for issue #292: https://github.com/decalage2/oletools/issues/292
+    b"margSz",
+
     # It seems \private should not be treated as a destination (issue #178)
     # Same for \pxe (issue #196)
     # b"private", b"pxe",
-    b"propname", b"protend", b"protstart", b"protusertbl",
-    b"result", b"revtbl", b"revtim", b"rsidtbl", b"rtf", b"rxe", b"shp", b"shpgrp", b"shpinst", b"shppict", b"shprslt", b"shptxt",
-    b"sn", b"sp", b"staticval", b"stylesheet", b"subject", b"sv", b"svb", b"tc", b"template", b"themedata", b"title", b"txe", b"ud",
-    b"upr", b"userprops", b"wgrffmtfilter", b"windowcaption", b"writereservation", b"writereservhash", b"xe", b"xform",
-    b"xmlattrname", b"xmlattrvalue", b"xmlclose", b"xmlname", b"xmlnstbl", b"xmlopen"
+    # from issue #303: These destination control words can be treated as a "value" type.
+    # They don't consume data so they won't change the state of the parser.
+    # b"atnicn", b"atntime", b"fname", b"fontfile", b"htmltag", b"keycode", b"maln",
+    # b"mhtmltag", b"mmath", b"mmathPr", b"nextfile", b"objtime", b"rsidtbl",
     ))
 
 
@@ -303,11 +321,31 @@ if sys.version_info[0] <= 2:
     BACKSLASH = '\\'
     BRACE_OPEN = '{'
     BRACE_CLOSE = '}'
+    UNICODE_TYPE = unicode
 else:
     # Python 3.x - Integers
     BACKSLASH = ord('\\')
     BRACE_OPEN = ord('{')
     BRACE_CLOSE = ord('}')
+    UNICODE_TYPE = str
+
+RTF_MAGIC = b'\x7b\\rt'   # \x7b == b'{' but does not mess up auto-indent
+
+
+def duration_str(duration):
+    """ create a human-readable string representation of duration [s] """
+    value = duration
+    unit = 's'
+    if value > 90:
+        value /= 60.
+        unit = 'min'
+        if value > 90:
+            value /= 60.
+            unit = 'h'
+            if value > 72:
+                value /= 24.
+                unit = 'days'
+    return '{0:.1f}{1}'.format(value, unit)
 
 
 #=== CLASSES =================================================================
@@ -356,6 +394,20 @@ class RtfParser(object):
         self.destinations = [document_destination]
         self.current_destination = document_destination
 
+    def _report_progress(self, start_time):
+        """ report progress on parsing at regular intervals """
+        now = float(time())
+        if now == start_time or self.size == 0:
+            return   # avoid zero-division
+        percent_done = 100. * self.index / self.size
+        time_per_index = (now - start_time) / float(self.index)
+        finish_estim = float(self.size - self.index) * time_per_index
+
+        log.debug('After {0} finished {1:4.1f}% of current file ({2} bytes); '
+                  'will finish in approx {3}'
+                  .format(duration_str(now-start_time), percent_done,
+                          self.size, duration_str(finish_estim)))
+
     def parse(self):
         """
         Parse the RTF data
@@ -364,8 +416,13 @@ class RtfParser(object):
         """
         # Start at beginning of data
         self.index = 0
+        start_time = time()
+        last_report = start_time
         # Loop until the end
         while self.index < self.size:
+            if time() - last_report > 15:     # report every 15s
+                self._report_progress(start_time)
+                last_report = time()
             if self.data[self.index] == BRACE_OPEN:
                 # Found an opening brace "{": Start of a group
                 self._open_group()
@@ -382,9 +439,7 @@ class RtfParser(object):
                 # NOTE: the full length of the control word + its optional integer parameter
                 # is limited by MS Word at 253 characters, so we have to run the regex
                 # on a cropped string:
-                data_cropped = self.data[self.index:]
-                if len(data_cropped)>253:
-                    data_cropped = data_cropped[:254]
+                data_cropped = self.data[self.index:self.index+254]
                 # append a space so that the regex can check the following character:
                 data_cropped += b' '
                 # m = re_control_word.match(self.data, self.index, self.index+253)
@@ -511,16 +566,20 @@ class RtfParser(object):
         pass
 
     def _bin(self, matchobject, param):
-        binlen = int(param)
+        if param is None:
+            log.info('Detected anti-analysis trick: \\bin object without length at index %X' % self.index)
+            binlen = 0
+        else:
+            binlen = int(param)
         # handle negative length
         if binlen < 0:
-            log.warn('Detected anti-analysis trick: \\bin object with negative length at index %X' % self.index)
+            log.info('Detected anti-analysis trick: \\bin object with negative length at index %X' % self.index)
             # binlen = int(param.strip('-'))
             # According to my tests, if the bin length is negative,
             # it should be treated as a null length:
             binlen=0
         # ignore optional space after \bin
-        if self.data[self.index] == ' ':
+        if ord(self.data[self.index:self.index + 1]) == ord(' '):
             log.debug('\\bin: ignoring whitespace before data')
             self.index += 1
         log.debug('\\bin: reading %d bytes of binary data' % binlen)
@@ -571,6 +630,10 @@ class RtfObject(object):
         self.filename = None
         self.src_path = None
         self.temp_path = None
+        # Additional OLE object data
+        self.clsid = None
+        self.clsid_desc = None
+
 
 
 
@@ -613,7 +676,7 @@ class RtfObjParser(RtfParser):
             rtfobj.rawdata = object_data
             # TODO: check if all hex data is extracted properly
 
-            obj = OleObject()
+            obj = oleobj.OleObject()
             try:
                 obj.parse(object_data)
                 rtfobj.format_id = obj.format_id
@@ -621,19 +684,26 @@ class RtfObjParser(RtfParser):
                 rtfobj.oledata_size = obj.data_size
                 rtfobj.oledata = obj.data
                 rtfobj.is_ole = True
-                if obj.class_name.lower() == 'package':
-                    opkg = OleNativeStream(bindata=obj.data, package=True)
+                if obj.class_name.lower() == b'package':
+                    opkg = oleobj.OleNativeStream(bindata=obj.data,
+                                                  package=True)
                     rtfobj.filename = opkg.filename
                     rtfobj.src_path = opkg.src_path
                     rtfobj.temp_path = opkg.temp_path
                     rtfobj.olepkgdata = opkg.data
                     rtfobj.is_package = True
+                else:
+                    if olefile.isOleFile(obj.data):
+                        ole = olefile.OleFileIO(obj.data)
+                        rtfobj.clsid = ole.root.clsid
+                        rtfobj.clsid_desc = clsid.KNOWN_CLSIDS.get(rtfobj.clsid,
+                            'unknown CLSID (please report at https://github.com/decalage2/oletools/issues)')
             except:
                 pass
                 log.debug('*** Not an OLE 1.0 Object')
 
     def bin(self, bindata):
-        if self.current_destination.cword == 'objdata':
+        if self.current_destination.cword == b'objdata':
             # TODO: keep track of this, because it is unusual and indicates potential obfuscation
             # trick: hexlify binary data, add it to hex data
             self.current_destination.data += binascii.hexlify(bindata)
@@ -644,6 +714,28 @@ class RtfObjParser(RtfParser):
         # TODO: same with control symbols, and opening bracket
         # log.debug('- Control word "%s", param=%s, level=%d' % (cword, param, self.group_level))
         pass
+
+    def control_symbol(self, matchobject):
+        # log.debug('control symbol %r at index %Xh' % (matchobject.group(), self.index))
+        symbol = matchobject.group()[1:2]
+        if symbol == b"'":
+            # read the two hex digits following "\'" - which can be any characters, not just hex digits
+            # (because within an objdata destination, they are simply ignored)
+            hexdigits = self.data[self.index+2:self.index+4]
+            # print(hexdigits)
+            # move the index two bytes forward
+            self.index += 2
+            if self.current_destination.cword == b'objdata':
+                # Here's the tricky part: there is a bug in the MS Word RTF parser at least
+                # until Word 2016, that removes the last hex digit before the \'hh control
+                # symbol, ONLY IF the number of hex digits read so far is odd.
+                # So to emulate that bug, we have to clean the data read so far by keeping
+                # only the hex digits:
+                # Filter out any non-hex character:
+                self.current_destination.data = re.sub(b'[^a-fA-F0-9]', b'', self.current_destination.data)
+                if len(self.current_destination.data) & 1 == 1:
+                    # If the number of hex digits is odd, remove the last one:
+                    self.current_destination.data = self.current_destination.data[:-1]
 
 
 #=== FUNCTIONS ===============================================================
@@ -668,7 +760,50 @@ def rtf_iter_objects(filename, min_size=32):
         yield obj.start, orig_len, obj.rawdata
 
 
+def is_rtf(arg, treat_str_as_data=False):
+    """ determine whether given file / stream / array represents an rtf file
 
+    arg can be either a file name, a byte stream (located at start), a
+    list/tuple or a an iterable that contains bytes.
+
+    For str it is not clear whether data is a file name or the data read from
+    it (at least for py2-str which is bytes). Argument treat_str_as_data
+    clarifies.
+    """
+    magic_len = len(RTF_MAGIC)
+    if isinstance(arg, UNICODE_TYPE):
+        with open(arg, 'rb') as reader:
+            return reader.read(len(RTF_MAGIC)) == RTF_MAGIC
+    if isinstance(arg, bytes) and not isinstance(arg, str):  # only in PY3
+        return arg[:magic_len] == RTF_MAGIC
+    if isinstance(arg, bytearray):
+        return arg[:magic_len] == RTF_MAGIC
+    if isinstance(arg, str):      # could be bytes, but we assume file name
+        if treat_str_as_data:
+            try:
+                return arg[:magic_len].encode('ascii', errors='strict')\
+                    == RTF_MAGIC
+            except UnicodeError:
+                return False
+        else:
+            with open(arg, 'rb') as reader:
+                return reader.read(len(RTF_MAGIC)) == RTF_MAGIC
+    if hasattr(arg, 'read'):      # a stream (i.e. file-like object)
+        return arg.read(len(RTF_MAGIC)) == RTF_MAGIC
+    if isinstance(arg, (list, tuple)):
+        iter_arg = iter(arg)
+    else:
+        iter_arg = arg
+
+    # check iterable
+    for magic_byte in zip(RTF_MAGIC):
+        try:
+            if next(iter_arg) not in magic_byte:
+                return False
+        except StopIteration:
+            return False
+
+    return True  # checked the complete magic without returning False --> match
 
 
 def sanitize_filename(filename, replacement='_', max_length=200):
@@ -712,15 +847,14 @@ def process_file(container, filename, data, output_dir=None, save_object=False):
     print('='*79)
     print('File: %r - size: %d bytes' % (filename, len(data)))
     tstream = tablestream.TableStream(
-        column_width=(3, 10, 31, 31),
-        header_row=('id', 'index', 'OLE Object', 'OLE Package'),
+        column_width=(3, 10, 63),
+        header_row=('id', 'index', 'OLE Object'),
         style=tablestream.TableStyleSlim
     )
     rtfp = RtfObjParser(data)
     rtfp.parse()
     for rtfobj in rtfp.objects:
         ole_color = None
-        pkg_color = None
         if rtfobj.is_ole:
             ole_column = 'format_id: %d ' % rtfobj.format_id
             if rtfobj.format_id == oleobj.OleObject.TYPE_EMBEDDED:
@@ -736,33 +870,37 @@ def process_file(container, filename, data, output_dir=None, save_object=False):
             else:
                 ole_column += 'data size: %d' % rtfobj.oledata_size
             if rtfobj.is_package:
-                pkg_column = 'Filename: %r\n' % rtfobj.filename
-                pkg_column += 'Source path: %r\n' % rtfobj.src_path
-                pkg_column += 'Temp path = %r' % rtfobj.temp_path
-                pkg_color = 'yellow'
+                ole_column += '\nOLE Package object:'
+                ole_column += '\nFilename: %r' % rtfobj.filename
+                ole_column += '\nSource path: %r' % rtfobj.src_path
+                ole_column += '\nTemp path = %r' % rtfobj.temp_path
+                ole_color = 'yellow'
                 # check if the file extension is executable:
                 _, ext = os.path.splitext(rtfobj.filename)
                 log.debug('File extension: %r' % ext)
                 if re_executable_extensions.match(ext):
-                    pkg_color = 'red'
-                    pkg_column += '\nEXECUTABLE FILE'
-            else:
-                pkg_column = 'Not an OLE Package'
+                    ole_color = 'red'
+                    ole_column += '\nEXECUTABLE FILE'
+            # else:
+            #     pkg_column = 'Not an OLE Package'
+            if rtfobj.clsid is not None:
+                ole_column += '\nCLSID: %s' % rtfobj.clsid
+                ole_column += '\n%s' % rtfobj.clsid_desc
+                if 'CVE' in rtfobj.clsid_desc:
+                    ole_color = 'red'
             # Detect OLE2Link exploit
             # http://www.kb.cert.org/vuls/id/921560
-            if rtfobj.class_name == 'OLE2Link':
+            if rtfobj.class_name == b'OLE2Link':
                 ole_color = 'red'
                 ole_column += '\nPossibly an exploit for the OLE2Link vulnerability (VU#921560, CVE-2017-0199)'
         else:
-            pkg_column = ''
             ole_column = 'Not a well-formed OLE object'
         tstream.write_row((
             rtfp.objects.index(rtfobj),
             # filename,
             '%08Xh' % rtfobj.start,
-            ole_column,
-            pkg_column
-            ), colors=(None, None, ole_color, pkg_color)
+            ole_column
+            ), colors=(None, None, ole_color)
         )
         tstream.write_sep()
     if save_object:
@@ -817,7 +955,9 @@ def process_file(container, filename, data, output_dir=None, save_object=False):
 
 def main():
     # print banner with version
-    print ('rtfobj %s - http://decalage.info/python/oletools' % __version__)
+    python_version = '%d.%d.%d' % sys.version_info[0:3]
+    print ('rtfobj %s on Python %s - http://decalage.info/python/oletools' %
+           (__version__, python_version))
     print ('THIS IS WORK IN PROGRESS - Check updates regularly!')
     print ('Please report any issue at https://github.com/decalage2/oletools/issues')
     print ('')

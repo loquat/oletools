@@ -10,6 +10,7 @@ Supported formats:
 - Word 97-2003 (.doc, .dot), Word 2007+ (.docm, .dotm)
 - Excel 97-2003 (.xls), Excel 2007+ (.xlsm, .xlsb)
 - PowerPoint 97-2003 (.ppt), PowerPoint 2007+ (.pptm, .ppsm)
+- Word/PowerPoint 2007+ XML (aka Flat OPC)
 - Word 2003 XML (.xml)
 - Word/Excel Single File Web Page / MHTML (.mht)
 - Publisher (.pub)
@@ -26,7 +27,7 @@ https://github.com/unixfreak0037/officeparser
 
 # === LICENSE ==================================================================
 
-# olevba is copyright (c) 2014-2017 Philippe Lagadec (http://www.decalage.info)
+# olevba is copyright (c) 2014-2018 Philippe Lagadec (http://www.decalage.info)
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification,
@@ -196,9 +197,17 @@ from __future__ import print_function
 # 2017-05-31     c1fe: - PR #135 fixing issue #132 for some Mac files
 # 2017-06-08       PL: - fixed issue #122 Chr() with negative numbers
 # 2017-06-15       PL: - deobfuscation line by line to handle large files
-# 2017-07-11 v0.51.1 PL: - raise exception instead of sys.exit (issue #180)
+# 2017-07-11 v0.52 PL: - raise exception instead of sys.exit (issue #180)
+# 2017-11-08       VB: - PR #124 adding user form parsing (Vincent Brillault)
+# 2017-11-17       PL: - fixed a few issues with form parsing
+# 2017-11-20       PL: - fixed issue #219, do not close the file too early
+# 2017-11-24       PL: - added keywords to detect self-modifying macros and
+#                        attempts to disable macro security (issue #221)
+# 2018-03-19       PL: - removed pyparsing from the thirdparty subfolder
+# 2018-04-15 v0.53 PL: - added support for Word/PowerPoint 2007+ XML (FlatOPC)
+#                        (issue #283)
 
-__version__ = '0.51.1dev1'
+__version__ = '0.53.1'
 
 #------------------------------------------------------------------------------
 # TODO:
@@ -265,6 +274,7 @@ except ImportError:
                                + "see http://codespeak.net/lxml " \
                                + "or http://effbot.org/zone/element-index.htm")
 
+
 # IMPORTANT: it should be possible to run oletools directly as scripts
 # in any directory without installing them with pip or setup.py.
 # In that case, relative imports are NOT usable.
@@ -280,12 +290,14 @@ if not _parent_dir in sys.path:
 from oletools.thirdparty import olefile
 from oletools.thirdparty.prettytable import prettytable
 from oletools.thirdparty.xglob import xglob, PathNotFoundException
-from oletools.thirdparty.pyparsing.pyparsing import \
+from pyparsing import \
         CaselessKeyword, CaselessLiteral, Combine, Forward, Literal, \
         Optional, QuotedString,Regex, Suppress, Word, WordStart, \
         alphanums, alphas, hexnums,nums, opAssoc, srange, \
         infixNotation, ParserElement
 from oletools import ppt_parser
+from oletools import oleform
+from oletools import rtfobj
 
 
 # monkeypatch email to fix issue #32:
@@ -473,6 +485,7 @@ MSG_OLEVBA_ISSUES = 'Please report this issue on %s' % URL_OLEVBA_ISSUES
 # Container types:
 TYPE_OLE = 'OLE'
 TYPE_OpenXML = 'OpenXML'
+TYPE_FlatOPC_XML = 'FlatOPC_XML'
 TYPE_Word2003_XML = 'Word2003_XML'
 TYPE_MHTML = 'MHTML'
 TYPE_TEXT = 'Text'
@@ -482,6 +495,7 @@ TYPE_PPT = 'PPT'
 TYPE2TAG = {
     TYPE_OLE: 'OLE:',
     TYPE_OpenXML: 'OpX:',
+    TYPE_FlatOPC_XML: 'FlX:',
     TYPE_Word2003_XML: 'XML:',
     TYPE_MHTML: 'MHT:',
     TYPE_TEXT: 'TXT:',
@@ -501,6 +515,18 @@ NS_W = '{http://schemas.microsoft.com/office/word/2003/wordml}'
 # the tag <w:binData w:name="editdata.mso"> contains the VBA macro code:
 TAG_BINDATA = NS_W + 'binData'
 ATTR_NAME = NS_W + 'name'
+
+# Namespaces and tags for Word/PowerPoint 2007+ XML parsing:
+# root: <pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">
+NS_XMLPACKAGE = '{http://schemas.microsoft.com/office/2006/xmlPackage}'
+TAG_PACKAGE = NS_XMLPACKAGE + 'package'
+# the tag <pkg:part> includes <pkg:binaryData> that contains the VBA macro code in Base64:
+# <pkg:part pkg:name="/word/vbaProject.bin" pkg:contentType="application/vnd.ms-office.vbaProject"><pkg:binaryData>
+TAG_PKGPART = NS_XMLPACKAGE + 'part'
+ATTR_PKG_NAME = NS_XMLPACKAGE + 'name'
+ATTR_PKG_CONTENTTYPE = NS_XMLPACKAGE + 'contentType'
+CTYPE_VBAPROJECT = "application/vnd.ms-office.vbaProject"
+TAG_PKGBINDATA = NS_XMLPACKAGE + 'binaryData'
 
 # Keywords to detect auto-executable macros
 AUTOEXEC_KEYWORDS = {
@@ -662,6 +688,13 @@ SUSPICIOUS_KEYWORDS = {
     'May detect WinJail Sandbox':
     # ref: http://www.cplusplus.com/forum/windows/96874/
         ('Afx:400000:0',),
+    'May attempt to disable VBA macro security and Protected View':
+    # ref: http://blog.trendmicro.com/trendlabs-security-intelligence/qkg-filecoder-self-replicating-document-encrypting-ransomware/
+    # ref: https://thehackernews.com/2017/11/ms-office-macro-malware.html
+        ('AccessVBOM', 'VBAWarnings', 'ProtectedView', 'DisableAttachementsInPV', 'DisableInternetFilesInPV',
+         'DisableUnsafeLocationsInPV', 'blockcontentexecutionfrominternet'),
+    'May attempt to modify the VBA code (self-modification)':
+        ('VBProject', 'VBComponents', 'CodeModule', 'AddFromString'),
 }
 
 # Regular Expression for a URL:
@@ -1465,7 +1498,7 @@ def _extract_vba(ole, vba_root, project_path, dir_path, relaxed=False):
             # So let's ignore it, otherwise it crashes on some files (issue #132)
             # PR #135 by @c1fe:
             # contrary to the specification I think that the unicode name
-            # is optional. if reference_reserved is not 0x003E I think it 
+            # is optional. if reference_reserved is not 0x003E I think it
             # is actually the start of another REFERENCE record
             # at least when projectsyskind_syskind == 0x02 (Macintosh)
             if reference_reserved == 0x003E:
@@ -2024,19 +2057,19 @@ def json2ascii(json_obj, encoding='utf8', errors='replace'):
     return json_obj
 
 
-_have_printed_json_start = False
-
-def print_json(json_dict=None, _json_is_last=False, **json_parts):
+def print_json(json_dict=None, _json_is_first=False, _json_is_last=False,
+               **json_parts):
     """ line-wise print of json.dumps(json2ascii(..)) with options and indent+1
 
     can use in two ways:
     (1) print_json(some_dict)
     (2) print_json(key1=value1, key2=value2, ...)
 
+    :param bool _json_is_first: set to True only for very first entry to complete
+                                the top-level json-list
     :param bool _json_is_last: set to True only for very last entry to complete
                                the top-level json-list
     """
-    global _have_printed_json_start
 
     if json_dict and json_parts:
         raise ValueError('Invalid json argument: want either single dict or '
@@ -2048,9 +2081,8 @@ def print_json(json_dict=None, _json_is_last=False, **json_parts):
     if json_parts:
         json_dict = json_parts
 
-    if not _have_printed_json_start:
+    if _json_is_first:
         print('[')
-        _have_printed_json_start = True
 
     lines = json.dumps(json2ascii(json_dict), check_circular=False,
                            indent=4, ensure_ascii=False).splitlines()
@@ -2323,10 +2355,14 @@ class VBA_Parser(object):
             # read file from disk, check if it is a Word 2003 XML file (WordProcessingML), Excel 2003 XML,
             # or a plain text file containing VBA code
             if data is None:
-                data = open(filename, 'rb').read()
+                with open(filename, 'rb') as file_handle:
+                    data = file_handle.read()
             # check if it is a Word 2003 XML file (WordProcessingML): must contain the namespace
             if b'http://schemas.microsoft.com/office/word/2003/wordml' in data:
                 self.open_word2003xml(data)
+            # check if it is a Word/PowerPoint 2007+ XML file (Flat OPC): must contain the namespace
+            if b'http://schemas.microsoft.com/office/2006/xmlPackage' in data:
+                self.open_flatopc(data)
             # store a lowercase version for the next tests:
             data_lowercase = data.lower()
             # check if it is a MHT file (MIME HTML, Word or Excel saved as "Single File Web Page"):
@@ -2340,6 +2376,13 @@ class VBA_Parser(object):
                 self.open_mht(data)
         #TODO: handle exceptions
         #TODO: Excel 2003 XML
+            # Check whether this is rtf
+            if rtfobj.is_rtf(data, treat_str_as_data=True):
+                # Ignore RTF since it contains no macros and methods in here will not find macros
+                # in embedded objects. run rtfobj and repeat on its output.
+                msg = '%s is RTF, need to run rtfobj.py and find VBA Macros in its output.' % self.filename
+                log.info(msg)
+                raise FileOpenError(msg)
             # Check if this is a plain text VBA or VBScript file:
             # To avoid scanning binary files, we simply check for some control chars:
             if self.type is None and b'\x00' not in data:
@@ -2385,10 +2428,12 @@ class VBA_Parser(object):
             #TODO: if the zip file is encrypted, suggest to use the -z option, or try '-z infected' automatically
             # check each file within the zip if it is an OLE file, by reading its magic:
             for subfile in z.namelist():
-                magic = z.open(subfile).read(len(olefile.MAGIC))
+                with z.open(subfile) as file_handle:
+                    magic = file_handle.read(len(olefile.MAGIC))
                 if magic == olefile.MAGIC:
                     log.debug('Opening OLE file %s within zip' % subfile)
-                    ole_data = z.open(subfile).read()
+                    with z.open(subfile) as file_handle:
+                        ole_data = file_handle.read()
                     try:
                         self.ole_subfiles.append(
                             VBA_Parser(filename=subfile, data=ole_data,
@@ -2455,6 +2500,51 @@ class VBA_Parser(object):
                     log.info('%s is not a valid MSO file' % fname)
             # set type only if parsing succeeds
             self.type = TYPE_Word2003_XML
+        except OlevbaBaseException as exc:
+            if self.relaxed:
+                log.info('Failed XML parsing for file %r (%s)' % (self.filename, exc))
+                log.debug('Trace:', exc_info=True)
+            else:
+                raise
+        except Exception as exc:
+            # TODO: differentiate exceptions for each parsing stage
+            # (but ET is different libs, no good exception description in API)
+            # found: XMLSyntaxError
+            log.info('Failed XML parsing for file %r (%s)' % (self.filename, exc))
+            log.debug('Trace:', exc_info=True)
+
+    def open_flatopc(self, data):
+        """
+        Open a Word or PowerPoint 2007+ XML file, aka "Flat OPC"
+        :param data: file contents in a string or bytes
+        :return: nothing
+        """
+        log.info('Opening Flat OPC Word/PowerPoint XML file %s' % self.filename)
+        try:
+            # parse the XML content
+            # TODO: handle XML parsing exceptions
+            et = ET.fromstring(data)
+            # TODO: check root node namespace and tag
+            # find all the pkg:part elements:
+            for pkgpart in et.iter(TAG_PKGPART):
+                fname = pkgpart.get(ATTR_PKG_NAME, 'unknown')
+                content_type = pkgpart.get(ATTR_PKG_CONTENTTYPE, 'unknown')
+                if content_type == CTYPE_VBAPROJECT:
+                    for bindata in pkgpart.iterfind(TAG_PKGBINDATA):
+                        try:
+                            ole_data = binascii.a2b_base64(bindata.text)
+                            self.ole_subfiles.append(
+                                VBA_Parser(filename=fname, data=ole_data,
+                                           relaxed=self.relaxed))
+                        except OlevbaBaseException as exc:
+                            if self.relaxed:
+                                log.info('Error parsing subfile {0}: {1}'
+                                         .format(fname, exc))
+                                log.debug('Trace:', exc_info=True)
+                            else:
+                                raise SubstreamOpenError(self.filename, fname, exc)
+            # set type only if parsing succeeds
+            self.type = TYPE_FlatOPC_XML
         except OlevbaBaseException as exc:
             if self.relaxed:
                 log.info('Failed XML parsing for file %r (%s)' % (self.filename, exc))
@@ -2987,6 +3077,24 @@ class VBA_Parser(object):
                     log.debug('Printable string found in form: %r' % m.group())
                     yield (self.filename, '/'.join(o_stream), m.group())
 
+    def extract_form_strings_extended(self):
+        if self.ole_file is None:
+            # This may be either an OpenXML/PPT or a text file:
+            if self.type == TYPE_TEXT:
+                # This is a text file, return no results:
+                return
+            else:
+                # OpenXML/PPT: recursively yield results from each OLE subfile:
+                for ole_subfile in self.ole_subfiles:
+                    for results in ole_subfile.extract_form_strings_extended():
+                        yield results
+        else:
+            # This is an OLE file:
+            self.find_vba_forms()
+            ole = self.ole_file
+            for form_storage in self.vba_forms:
+                for variable in oleform.extract_OleFormVariables(ole, form_storage):
+                    yield (self.filename, '/'.join(form_storage), variable)
 
     def close(self):
         """
@@ -3116,6 +3224,18 @@ class VBA_Parser_CLI(VBA_Parser):
                     print('VBA FORM STRING IN %r - OLE stream: %r' % (subfilename, stream_path))
                     print('- ' * 39)
                     print(form_string)
+                try:
+                    for (subfilename, stream_path, form_variables) in self.extract_form_strings_extended():
+                        if form_variables is not None:
+                            print('-' * 79)
+                            print('VBA FORM Variable "%s" IN %r - OLE stream: %r' % (form_variables['name'], subfilename, stream_path))
+                            print('- ' * 39)
+                            print(str(form_variables['value']))
+                except Exception as exc:
+                    # display the exception with full stack trace for debugging
+                    log.info('Error parsing form: %s' % exc)
+                    log.debug('Traceback:', exc_info=True)
+
                 if not vba_code_only:
                     # analyse the code from all modules at once:
                     self.print_analysis(show_decoded_strings, deobfuscate)
@@ -3269,10 +3389,9 @@ class VBA_Parser_CLI(VBA_Parser):
 
 #=== MAIN =====================================================================
 
-def main():
-    """
-    Main function, called when olevba is run from the command line
-    """
+def parse_args(cmd_line_args=None):
+    """ parse command line arguments (given ones or per default sys.argv) """
+
     DEFAULT_LOG_LEVEL = "warning" # Default log level
     LOG_LEVELS = {
         'debug':    logging.DEBUG,
@@ -3324,7 +3443,7 @@ def main():
     parser.add_option('--relaxed', dest="relaxed", action="store_true", default=False,
                             help="Do not raise errors if opening of substream fails")
 
-    (options, args) = parser.parse_args()
+    (options, args) = parser.parse_args(cmd_line_args)
 
     # Print help if no arguments are passed
     if len(args) == 0:
@@ -3333,16 +3452,32 @@ def main():
         parser.print_help()
         sys.exit(RETURN_WRONG_ARGS)
 
+    options.loglevel = LOG_LEVELS[options.loglevel]
+
+    return options, args
+
+
+def main(cmd_line_args=None):
+    """
+    Main function, called when olevba is run from the command line
+
+    Optional argument: command line arguments to be forwarded to ArgumentParser
+    in process_args. Per default (cmd_line_args=None), sys.argv is used. Option
+    mainly added for unit-testing
+    """
+
+    options, args = parse_args(cmd_line_args)
+
     # provide info about tool and its version
     if options.output_mode == 'json':
-        # prints opening [
+        # print first json entry with meta info and opening '['
         print_json(script_name='olevba', version=__version__,
                    url='http://decalage.info/python/oletools',
-                   type='MetaInformation')
+                   type='MetaInformation', _json_is_first=True)
     else:
         print('olevba %s - http://decalage.info/python/oletools' % __version__)
 
-    logging.basicConfig(level=LOG_LEVELS[options.loglevel], format='%(levelname)-8s %(message)s')
+    logging.basicConfig(level=options.loglevel, format='%(levelname)-8s %(message)s')
     # enable logging in the modules:
     enable_logging()
 
@@ -3398,6 +3533,11 @@ def main():
                 continue
 
             try:
+                # close the previous file if analyzing several:
+                # (this must be done here to avoid closing the file if there is only 1,
+                # to fix issue #219)
+                if vba_parser is not None:
+                    vba_parser.close()
                 # Open the file
                 vba_parser = VBA_Parser_CLI(filename, data=data, container=container,
                                             relaxed=options.relaxed)
@@ -3463,12 +3603,10 @@ def main():
                                   % (filename, exc.orig_exc))
                 return_code = RETURN_PARSE_ERROR if return_code == 0 \
                                                 else RETURN_SEVERAL_ERRS
-            finally:
-                if vba_parser is not None:
-                    vba_parser.close()
+            # Here we do not close the vba_parser, because process_file may need it below.
 
         if options.output_mode == 'triage':
-            print('\n(Flags: OpX=OpenXML, XML=Word2003XML, MHT=MHTML, TXT=Text, M=Macros, ' \
+            print('\n(Flags: OpX=OpenXML, XML=Word2003XML, FlX=FlatOPC XML, MHT=MHTML, TXT=Text, M=Macros, ' \
                   'A=Auto-executable, S=Suspicious keywords, I=IOCs, H=Hex strings, ' \
                   'B=Base64 strings, D=Dridex strings, V=VBA strings, ?=Unknown)\n')
 

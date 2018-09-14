@@ -14,7 +14,7 @@ http://www.decalage.info/python/oletools
 
 #=== LICENSE ==================================================================
 
-# oledir is copyright (c) 2015-2017 Philippe Lagadec (http://www.decalage.info)
+# oledir is copyright (c) 2015-2018 Philippe Lagadec (http://www.decalage.info)
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification,
@@ -48,8 +48,10 @@ from __future__ import print_function
 # 2016-08-09       PL: - fixed issue #77 (imports from thirdparty dir)
 # 2017-03-08 v0.51 PL: - fixed absolute imports, added optparse
 #                      - added support for zip files and wildcards
+# 2018-04-11 v0.53 PL: - added table displaying storage tree and CLSIDs
+# 2018-04-13       PL: - moved KNOWN_CLSIDS to common.clsid
 
-__version__ = '0.51'
+__version__ = '0.53'
 
 #------------------------------------------------------------------------------
 # TODO:
@@ -88,7 +90,7 @@ if os.name == 'nt':
 from oletools.thirdparty import olefile
 from oletools.thirdparty.tablestream import tablestream
 from oletools.thirdparty.xglob import xglob
-
+from oletools.common.clsid import KNOWN_CLSIDS
 
 # === CONSTANTS ==============================================================
 
@@ -105,7 +107,7 @@ STORAGE_NAMES = {
 
 STORAGE_COLORS = {
     olefile.STGTY_EMPTY:     'green',
-    olefile.STGTY_STORAGE:   'blue',
+    olefile.STGTY_STORAGE:   'cyan',
     olefile.STGTY_STREAM:    'yellow',
     olefile.STGTY_LOCKBYTES: 'magenta',
     olefile.STGTY_PROPERTY:  'magenta',
@@ -127,6 +129,13 @@ def sid_display(sid):
     else:
         return sid
 
+def clsid_display(clsid):
+    if clsid in KNOWN_CLSIDS:
+        clsid += '\n%s' % KNOWN_CLSIDS[clsid]
+    color = 'yellow'
+    if 'CVE' in clsid:
+        color = 'red'
+    return (clsid, color)
 
 # === MAIN ===================================================================
 

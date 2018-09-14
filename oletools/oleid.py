@@ -18,7 +18,7 @@ http://www.decalage.info/python/oletools
 
 #=== LICENSE =================================================================
 
-# oleid is copyright (c) 2012-2017, Philippe Lagadec (http://www.decalage.info)
+# oleid is copyright (c) 2012-2018, Philippe Lagadec (http://www.decalage.info)
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without modification,
@@ -54,8 +54,9 @@ from __future__ import print_function
 # 2016-10-25 v0.50 PL: - fixed print and bytes strings for Python 3
 # 2016-12-12 v0.51 PL: - fixed relative imports for Python 3 (issue #115)
 # 2017-04-26       PL: - fixed absolute imports (issue #141)
+# 2017-09-01       SA: - detect OpenXML encryption
 
-__version__ = '0.51'
+__version__ = '0.53'
 
 
 #------------------------------------------------------------------------------
@@ -117,7 +118,7 @@ def detect_flash (data):
         # Read Header
         header = data[start:start+3]
         # Read Version
-        ver = struct.unpack('<b', data[start+3])[0]
+        ver = struct.unpack('<b', data[start+3:start+4])[0]
         # Error check for version above 20
         #TODO: is this accurate? (check SWF specifications)
         if ver > 20:
@@ -211,6 +212,9 @@ class OleID:
         if 0x13 in self.suminfo:
             if self.suminfo[0x13] & 1:
                 self.encrypted.value = True
+        # check if this is an OpenXML encrypted file
+        elif self.ole.exists('EncryptionInfo'):
+            self.encrypted.value = True
 
     def check_word (self):
         word = Indicator('word', False, name='Word Document',

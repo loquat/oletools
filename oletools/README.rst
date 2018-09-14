@@ -1,6 +1,8 @@
 python-oletools
 ===============
 
+|PyPI| |Build Status|
+
 `oletools <http://www.decalage.info/python/oletools>`__ is a package of
 python tools to analyze `Microsoft OLE2
 files <http://en.wikipedia.org/wiki/Compound_File_Binary_Format>`__
@@ -19,6 +21,7 @@ Issues/Suggestions/Questions <https://github.com/decalage2/oletools/issues>`__
 - `Contact the Author <http://decalage.info/contact>`__ -
 `Repository <https://github.com/decalage2/oletools>`__ - `Updates on
 Twitter <https://twitter.com/decalage2>`__
+`Cheatsheet <https://github.com/decalage2/oletools/blob/master/cheatsheet/oletools_cheatsheet.pdf>`__
 
 Note: python-oletools is not related to OLETools published by BeCubed
 Software.
@@ -26,46 +29,38 @@ Software.
 News
 ----
 
--  **2017-06-29 v0.51**:
+-  **2018-05-30 v0.53**:
 
-   -  added the `oletools
-      cheatsheet <https://github.com/decalage2/oletools/blob/master/cheatsheet/oletools_cheatsheet.pdf>`__
-   -  improved
-      `rtfobj <https://github.com/decalage2/oletools/wiki/rtfobj>`__ to
-      handle malformed RTF files, detect vulnerability CVE-2017-0199
-   -  olevba: improved deobfuscation and Mac files support
-   -  `mraptor <https://github.com/decalage2/oletools/wiki/mraptor>`__:
-      added more ActiveX macro triggers
-   -  added
-      `DocVarDump.vba <https://github.com/decalage2/oletools/blob/master/oletools/DocVarDump.vba>`__
-      to dump document variables using Word
-   -  olemap: can now detect and extract `extra data at end of
-      file <http://decalage.info/en/ole_extradata>`__, improved display
-   -  oledir, olemeta, oletimes: added support for zip files and
-      wildcards
-   -  many
-      `bugfixes <https://github.com/decalage2/oletools/milestone/3?closed=1>`__
-      in all the tools
-   -  improved Python 2+3 support
+   -  olevba and mraptor can now parse Word/PowerPoint 2007+ pure XML
+      files (aka Flat OPC format)
+   -  improved support for VBA forms in olevba (oleform)
+   -  rtfobj now displays the CLSID of OLE objects, which is the best
+      way to identify them. Known-bad CLSIDs such as MS Equation Editor
+      are highlighted in red.
+   -  Updated rtfobj to handle obfuscated RTF samples.
+   -  rtfobj now handles the "\'" obfuscation trick seen in recent
+      samples such as
+      https://twitter.com/buffaloverflow/status/989798880295444480, by
+      emulating the MS Word bug described in
+      https://securelist.com/disappearing-bytes/84017/
+   -  msodde: improved detection of DDE formulas in CSV files
+   -  oledir now displays the tree of storage/streams, along with CLSIDs
+      and their meaning.
+   -  common.clsid contains the list of known CLSIDs, and their links to
+      CVE vulnerabilities when relevant.
+   -  oleid now detects encrypted OpenXML files
+   -  fixed bugs in oleobj, rtfobj, oleid, olevba
 
--  2016-11-01 v0.50: all oletools now support python 2 and 3.
+-  2018-02-18 v0.52:
 
-   -  olevba: several bugfixes and improvements.
-   -  mraptor: improved detection, added mraptor\_milter for
-      Sendmail/Postfix integration.
-   -  rtfobj: brand new RTF parser, obfuscation-aware, improved display,
-      detect executable files in OLE Package objects.
-   -  setup: now creates handy command-line scripts to run oletools from
-      any directory.
-
--  2016-06-10 v0.47:
-   `olevba <https://github.com/decalage2/oletools/wiki/olevba>`__ added
-   PPT97 macros support, improved handling of malformed/incomplete
-   documents, improved error handling and JSON output, now returns an
-   exit code based on analysis results, new --relaxed option.
-   `rtfobj <https://github.com/decalage2/oletools/wiki/rtfobj>`__:
-   improved parsing to handle obfuscated RTF documents, added -d option
-   to set output dir. Moved repository and documentation to GitHub.
+   -  New tool
+      `msodde <https://github.com/decalage2/oletools/wiki/msodde>`__ to
+      detect and extract DDE links from MS Office files, RTF and CSV;
+   -  Fixed bugs in olevba, rtfobj and olefile, to better handle
+      malformed/obfuscated files;
+   -  Performance improvements in olevba and rtfobj;
+   -  VBA form parsing in olevba;
+   -  Office 2007+ support in oleobj.
 
 See the `full
 changelog <https://github.com/decalage2/oletools/wiki/Changelog>`__ for
@@ -74,12 +69,35 @@ more information.
 Tools:
 ------
 
--  `olebrowse <https://github.com/decalage2/oletools/wiki/olebrowse>`__:
-   A simple GUI to browse OLE files (e.g. MS Word, Excel, Powerpoint
-   documents), to view and extract individual data streams.
+Tools to analyze malicious documents
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 -  `oleid <https://github.com/decalage2/oletools/wiki/oleid>`__: to
    analyze OLE files to detect specific characteristics usually found in
    malicious files.
+-  `olevba <https://github.com/decalage2/oletools/wiki/olevba>`__: to
+   extract and analyze VBA Macro source code from MS Office documents
+   (OLE and OpenXML).
+-  `MacroRaptor <https://github.com/decalage2/oletools/wiki/mraptor>`__:
+   to detect malicious VBA Macros
+-  `msodde <https://github.com/decalage2/oletools/wiki/msodde>`__: to
+   detect and extract DDE/DDEAUTO links from MS Office documents, RTF
+   and CSV
+-  `pyxswf <https://github.com/decalage2/oletools/wiki/pyxswf>`__: to
+   detect, extract and analyze Flash objects (SWF) that may be embedded
+   in files such as MS Office documents (e.g. Word, Excel) and RTF,
+   which is especially useful for malware analysis.
+-  `oleobj <https://github.com/decalage2/oletools/wiki/oleobj>`__: to
+   extract embedded objects from OLE files.
+-  `rtfobj <https://github.com/decalage2/oletools/wiki/rtfobj>`__: to
+   extract embedded objects from RTF files.
+
+Tools to analyze the structure of OLE files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+-  `olebrowse <https://github.com/decalage2/oletools/wiki/olebrowse>`__:
+   A simple GUI to browse OLE files (e.g. MS Word, Excel, Powerpoint
+   documents), to view and extract individual data streams.
 -  `olemeta <https://github.com/decalage2/oletools/wiki/olemeta>`__: to
    extract all standard properties (metadata) from OLE files.
 -  `oletimes <https://github.com/decalage2/oletools/wiki/oletimes>`__:
@@ -90,20 +108,6 @@ Tools:
    orphaned entries.
 -  `olemap <https://github.com/decalage2/oletools/wiki/olemap>`__: to
    display a map of all the sectors in an OLE file.
--  `olevba <https://github.com/decalage2/oletools/wiki/olevba>`__: to
-   extract and analyze VBA Macro source code from MS Office documents
-   (OLE and OpenXML).
--  `MacroRaptor <https://github.com/decalage2/oletools/wiki/mraptor>`__:
-   to detect malicious VBA Macros
--  `pyxswf <https://github.com/decalage2/oletools/wiki/pyxswf>`__: to
-   detect, extract and analyze Flash objects (SWF) that may be embedded
-   in files such as MS Office documents (e.g. Word, Excel) and RTF,
-   which is especially useful for malware analysis.
--  `oleobj <https://github.com/decalage2/oletools/wiki/oleobj>`__: to
-   extract embedded objects from OLE files.
--  `rtfobj <https://github.com/decalage2/oletools/wiki/rtfobj>`__: to
-   extract embedded objects from RTF files.
--  and a few others (coming soon)
 
 Projects using oletools:
 ------------------------
@@ -120,8 +124,10 @@ Sandbox <https://github.com/cuckoosandbox/cuckoo>`__,
 `Anlyz.io <https://sandbox.anlyz.io/>`__,
 `ViperMonkey <https://github.com/decalage2/ViperMonkey>`__,
 `pcodedmp <https://github.com/bontchev/pcodedmp>`__,
-`dridex.malwareconfig.com <https://dridex.malwareconfig.com>`__, and
-probably `VirusTotal <https://www.virustotal.com>`__. (Please `contact
+`dridex.malwareconfig.com <https://dridex.malwareconfig.com>`__,
+`Snake <https://github.com/countercept/snake>`__,
+`DARKSURGEON <https://github.com/cryps1s/DARKSURGEON>`__, and probably
+`VirusTotal <https://www.virustotal.com>`__. (Please `contact
 me <(http://decalage.info/contact)>`__ if you have or know a project
 using oletools)
 
@@ -180,7 +186,7 @@ This license applies to the python-oletools package, apart from the
 thirdparty folder which contains third-party files published with their
 own license.
 
-The python-oletools package is copyright (c) 2012-2017 Philippe Lagadec
+The python-oletools package is copyright (c) 2012-2018 Philippe Lagadec
 (http://www.decalage.info)
 
 All rights reserved.
@@ -232,3 +238,8 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+.. |PyPI| image:: https://img.shields.io/pypi/v/oletools.svg
+   :target: https://pypi.org/project/oletools/
+.. |Build Status| image:: https://travis-ci.org/decalage2/oletools.svg?branch=master
+   :target: https://travis-ci.org/decalage2/oletools
